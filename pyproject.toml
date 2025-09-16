@@ -1,0 +1,29 @@
+[project]
+name = "aws-copilot"
+version = "0.1.0"
+description = "FastAPI backend serving a Vite React frontend."
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.34.0"
+]
+
+[project.optional-dependencies]
+dev = [
+    "watchfiles>=0.24.0",
+    "httpx>=0.28.1"
+]
+
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+dev-dependencies = ["watchfiles>=0.24.0", "httpx>=0.28.1"]
+python-preference = "managed"
+
+[tool.hatch.build.targets.wheel]
+packages = ["backend"]
+
+[tool.hatch.build.targets.sdist]
+include = ["backend", "pyproject.toml"]
