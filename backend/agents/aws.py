@@ -83,7 +83,8 @@ class AWSDeployerTool(Tool):
 
         try:
             result = action_handler(params)
-            return _format_success(action, result)
+            summarized = _summarize_result(result)
+            return _format_success(action, summarized)
         except ValueError as exc:
             _LOGGER.warning("AWS action %s validation error: %s", action, exc)
             return _format_error(action, str(exc))
@@ -170,6 +171,51 @@ def _sanitize(params: Mapping[str, Any]) -> Dict[str, Any]:
         else:
             sanitized[key] = value
     return sanitized
+
+
+def _truncate_string(value: str, *, limit: int = 6000) -> str:
+    if len(value) <= limit:
+        return value
+    if limit <= 3:
+        return value[:limit]
+    return value[: limit - 3] + "..."
+
+
+def _summarize_result(value: Any, *, max_items: int = 5, max_string: int = 6000) -> Any:
+    """Recursively cap large results to keep agent observations small.
+
+    - Truncates long strings to ``max_string`` characters.
+    - For mappings, if a value is a list longer than ``max_items``, keeps the
+      first ``max_items`` items and injects a sibling ``<key>_summary`` with
+      ``{"shown": n, "total": N}``.
+    - Recurses into nested structures.
+    """
+
+    # Strings
+    if isinstance(value, str):
+        return _truncate_string(value, limit=max_string)
+
+    # Lists (return trimmed list; parent mapping will add summary if applicable)
+    if isinstance(value, list):
+        # Recurse per item but hard-cap size to avoid deep traversal cost
+        trimmed_items = value[:max_items]
+        return [_summarize_result(item, max_items=max_items, max_string=max_string) for item in trimmed_items]
+
+    # Mappings
+    if isinstance(value, Mapping):
+        summarized: Dict[str, Any] = {}
+        for key, item in value.items():
+            if isinstance(item, list):
+                total = len(item)
+                summarized[key] = _summarize_result(item, max_items=max_items, max_string=max_string)
+                if total > max_items:
+                    summarized[f"{key}_summary"] = {"shown": len(summarized[key]), "total": total}
+            else:
+                summarized[key] = _summarize_result(item, max_items=max_items, max_string=max_string)
+        return summarized
+
+    # Other primitives
+    return value
 
 
 def _resolve_region(params: Mapping[str, Any]) -> str:
@@ -415,6 +461,33 @@ def _describe_images(params: MutableMapping[str, Any]) -> Mapping[str, Any]:
             }
         )
     return {"images": images}
+
+
+def _describe_key_pairs(params: MutableMapping[str, Any]) -> Mapping[str, Any]:
+    client = _client("ec2", params)
+
+    describe_kwargs: Dict[str, Any] = {}
+    key_names = _ensure_list(params.get("key_names")) or _ensure_list(params.get("KeyNames"))
+    if key_names:
+        describe_kwargs["KeyNames"] = key_names
+
+    filters = params.get("filters")
+    if filters:
+        describe_kwargs["Filters"] = _normalize_filters(filters)
+
+    response = client.describe_key_pairs(**describe_kwargs)
+    pairs = []
+    for item in response.get("KeyPairs", []):
+        pairs.append(
+            {
+                "key_name": item.get("KeyName"),
+                "key_pair_id": item.get("KeyPairId"),
+                "fingerprint": item.get("KeyFingerprint"),
+                "type": item.get("KeyType"),
+                "tags": {tag.get("Key"): tag.get("Value") for tag in item.get("Tags", [])},
+            }
+        )
+    return {"key_pairs": pairs}
 
 
 def _upload_s3(params: MutableMapping[str, Any]) -> Mapping[str, Any]:
@@ -670,6 +743,7 @@ AWSDeployerTool._SUPPORTED_ACTIONS = {
     "list_ec2_instances": _list_ec2_instances,
     "create_bucket": _create_bucket,
     "describe_images": _describe_images,
+    "describe_key_pairs": _describe_key_pairs,
     "upload_s3": _upload_s3,
     "download_s3": _download_s3,
     "list_s3_objects": _list_s3_objects,

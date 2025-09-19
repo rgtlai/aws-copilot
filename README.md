@@ -96,6 +96,9 @@ directly to AWS:
 - Need an AMI? Ask the agent to run `describe_images` with the owner/filter
   values you want (e.g., owner `amazon` and a name filter matching an Amazon
   Linux 2 AMI). The response includes the AMI IDs you can feed into `launch_ec2`.
+- Need a key pair? Use `describe_key_pairs` to list the key pairs in the target
+  region and choose an existing one, or create a new key pair in the AWS console
+  first and provide its name here.
 
 During the chat flow the assistant confirms the required AWS parameters and then
 runs the `github_deployer` tool to orchestrate the clone → package → deploy

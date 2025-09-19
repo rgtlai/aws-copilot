@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Iterable, Sequence
+from typing import Sequence
 
 from agentproplus import ReactAgent
 from agentproplus.tools import Tool
@@ -109,6 +109,7 @@ Safety reminders
 
 def create_deployment_agent(
     tools: Sequence[Tool] | None = None,
+    mcp_config: dict | None = None,
     max_iterations: int = 12,
 ) -> ReactAgent:
     """Construct a :class:`ReactAgent` wired with deployment tools.
@@ -122,19 +123,22 @@ def create_deployment_agent(
         Upper bound on ReAct reasoning loops before the agent returns control.
     """
 
-    tool_list: Iterable[Tool]
-    if tools:
-        tool_list = tools
-    else:
-        deployer = get_default_aws_tool()
-        proxy_tools = [
-            AWSActionProxy(action=action, deployer=deployer)
-            for action in sorted(deployer._SUPPORTED_ACTIONS)
-        ]
-        github_tool = GitHubDeploymentTool(aws_tool=deployer)
-        tool_list = [deployer, github_tool, *proxy_tools]
+    deployer = get_default_aws_tool()
+    proxy_tools = [
+        AWSActionProxy(action=action, deployer=deployer)
+        for action in sorted(deployer._SUPPORTED_ACTIONS)
+    ]
+    github_tool = GitHubDeploymentTool(aws_tool=deployer)
 
-    return ReactAgent(tools=list(tool_list), custom_system_prompt=_SYSTEM_PROMPT, max_iterations=max_iterations)
+    tool_list: list[Tool] = [deployer, github_tool, *proxy_tools]
+    if tools:
+        tool_list.extend(tools)
+
+    return ReactAgent(
+        tools=tool_list,
+        custom_system_prompt=_SYSTEM_PROMPT,
+        max_iterations=max_iterations
+    )
 
 
 def execute_aws_action(action: str, params: dict) -> str:

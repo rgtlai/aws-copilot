@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
@@ -22,8 +23,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from backend.agents.runtime import create_deployment_agent, execute_aws_action
+from backend.agents.aws_mcp import server as aws_mcp_server
 from backend.credentials import MissingCredentialsError, get_aws_credentials_status, save_aws_credentials
-from agentproplus.tools import UserInputTool
+
 
 app = FastAPI(title="AWS Copilot App")
 
@@ -147,7 +149,18 @@ async def agent_websocket(websocket: WebSocket) -> None:
     """WebSocket endpoint bridging frontend conversations to the deployment agent."""
 
     await websocket.accept()
-    agent = create_deployment_agent()
+    agent = create_deployment_agent(
+        mcp_config={
+            "servers": [
+                {
+                    "id": "aws-tools-mcp",
+                    "command": sys.executable,
+                    "args": ["-m", "backend.agents.aws_mcp"],
+                }
+            ]
+        },
+    )
+    #agent = create_deployment_agent()
 
     while True:
         try:

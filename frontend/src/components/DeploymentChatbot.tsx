@@ -90,6 +90,10 @@ const DeploymentChatbot = () => {
     }
   }, [credentialsDialogOpen, loadCredentialsStatus]);
 
+  const sanitizeBucketCandidate = useCallback((value: string): string => {
+    return value.trim().replace(/[.,;:]+$/g, '');
+  }, []);
+
   const inferBucketFromText = useCallback((text: string): string | null => {
     if (!text) {
       return null;
@@ -105,12 +109,15 @@ const DeploymentChatbot = () => {
     for (const pattern of patterns) {
       const match = text.match(pattern);
       if (match && match[1]) {
-        return match[1].trim();
+        const candidate = sanitizeBucketCandidate(match[1]);
+        if (candidate) {
+          return candidate;
+        }
       }
     }
 
     return null;
-  }, []);
+  }, [sanitizeBucketCandidate]);
 
   const formattedCredentialsUpdatedAt = useMemo(() => {
     if (!credentialsStatus?.updated_at) {
@@ -250,15 +257,15 @@ const DeploymentChatbot = () => {
 
           const effectiveInstructions = uploadInstructions ?? uploadInstructionsFromThoughts;
           if (effectiveInstructions !== null) {
-            const resolvedInstructions = effectiveInstructions || 'Please choose a file to upload.';
-            setUploadPrompt(resolvedInstructions);
-            if (!uploadBucket.trim()) {
-              const inferredBucket = inferBucketFromText(resolvedInstructions);
-              if (inferredBucket) {
-                setUploadBucket(inferredBucket);
-                setBucketHint(inferredBucket);
+              const resolvedInstructions = effectiveInstructions || 'Please choose a file to upload.';
+              setUploadPrompt(resolvedInstructions);
+              if (!uploadBucket.trim()) {
+                const inferredBucket = inferBucketFromText(resolvedInstructions);
+                if (inferredBucket) {
+                  setUploadBucket(inferredBucket);
+                  setBucketHint(inferredBucket);
+                }
               }
-            }
             if (!assistantMessage) {
               assistantMessage = resolvedInstructions;
             }
@@ -286,12 +293,13 @@ const DeploymentChatbot = () => {
           ) {
             const bucketName = bucketHint || uploadBucket;
             const fallbackInstructions = bucketName
-              ? `Please upload the file you would like to add to the S3 bucket "${bucketName}".`
+              ? `Please upload the file you would like to add to the S3 bucket "${sanitizeBucketCandidate(bucketName)}".`
               : 'Please upload the file you would like to add to the target S3 bucket.';
             setUploadPrompt(fallbackInstructions);
             if (bucketName) {
-              setUploadBucket((current) => current || bucketName);
-              setBucketHint((current) => current || bucketName);
+              const normalized = sanitizeBucketCandidate(bucketName);
+              setUploadBucket((current) => current || normalized);
+              setBucketHint((current) => current || normalized);
             }
           }
 
@@ -339,8 +347,9 @@ const DeploymentChatbot = () => {
 
     const inferredBucket = inferBucketFromText(content);
     if (inferredBucket) {
-      setBucketHint(inferredBucket);
-      setUploadBucket((current) => current || inferredBucket);
+      const normalized = sanitizeBucketCandidate(inferredBucket);
+      setBucketHint(normalized);
+      setUploadBucket((current) => current || normalized);
     }
 
     const socket = socketRef.current;

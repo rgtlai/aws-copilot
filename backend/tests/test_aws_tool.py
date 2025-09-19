@@ -156,7 +156,7 @@ def test_launch_ec2_missing_ami_returns_error():
     assert "ami_id" in response["message"]
 
 
-def test_launch_ec2_with_subnet_requires_group_ids():
+def test_launch_ec2_with_subnet_requires_group_ids(monkeypatch):
     tool = AWSDeployerTool()
 
     def fake_client(service, params):
@@ -168,7 +168,6 @@ def test_launch_ec2_with_subnet_requires_group_ids():
 
         return DummyClient()
 
-    monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr("backend.agents.aws._client", fake_client)
 
     response = json.loads(
@@ -244,3 +243,38 @@ def test_describe_images_rejects_bad_filter():
 
     assert response["status"] == "error"
     assert "Unsupported filter" in response["message"]
+
+
+def test_describe_key_pairs(monkeypatch):
+    tool = AWSDeployerTool()
+
+    def fake_client(service, params):
+        class DummyClient:
+            def describe_key_pairs(self, **kwargs):
+                return {
+                    "KeyPairs": [
+                        {
+                            "KeyName": "my-key",
+                            "KeyPairId": "key-123",
+                            "KeyFingerprint": "aa:bb",
+                            "KeyType": "rsa",
+                            "Tags": [{"Key": "env", "Value": "dev"}],
+                        }
+                    ]
+                }
+
+        return DummyClient()
+
+    monkeypatch.setattr("backend.agents.aws._client", fake_client)
+
+    response = json.loads(
+        tool.run(
+            {
+                "action": "describe_key_pairs",
+                "params": {"region": "us-west-2"},
+            }
+        )
+    )
+
+    assert response["status"] == "success"
+    assert response["result"]["key_pairs"][0]["key_name"] == "my-key"
