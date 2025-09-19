@@ -1,0 +1,55 @@
+# AgentPro graph definition for aws-copilot deployments.
+# The runtime currently loads this document for reference/documentation. When
+# AgentPro adds graph execution helpers the structure below can be consumed
+# programmatically.
+
+version: 0
+name: aws-copilot-deploy
+nodes:
+  - id: intake
+    role: conversation-orchestrator
+    next: context_sync
+  - id: context_sync
+    role: context-curator
+    next: requirements
+  - id: requirements
+    role: requirements-intake
+    next: planning
+  - id: planning
+    role: planning-validation
+    next: compliance
+  - id: compliance
+    role: compliance-safety
+    on_approve: dry_run
+    on_reject: planning
+  - id: dry_run
+    role: deployment-executor
+    mode: dry-run
+    on_success: execute
+    on_failure: planning
+  - id: execute
+    role: deployment-executor
+    mode: live
+    next: validation
+  - id: validation
+    role: post-deployment-validator
+    next: closure
+  - id: closure
+    role: conversation-orchestrator
+edges:
+  - from: intake
+    to: context_sync
+  - from: context_sync
+    to: requirements
+  - from: requirements
+    to: planning
+  - from: planning
+    to: compliance
+  - from: compliance
+    to: dry_run
+  - from: dry_run
+    to: execute
+  - from: execute
+    to: validation
+  - from: validation
+    to: closure

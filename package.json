@@ -10,8 +10,10 @@
     "frontend:build": "pnpm --dir frontend build",
     "frontend:lint": "pnpm --dir frontend lint",
     "frontend:preview": "pnpm --dir frontend preview",
+    "frontend:test": "pnpm --dir frontend test",
     "backend:dev": "bash ./scripts/run-backend.sh dev",
-    "backend:start": "bash ./scripts/run-backend.sh start"
+    "backend:start": "bash ./scripts/run-backend.sh start",
+    "dev:up": "bash ./scripts/dev-up.sh"
   },
   "devDependencies": {
     "concurrently": "^8.2.2"
