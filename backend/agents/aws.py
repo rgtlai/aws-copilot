@@ -135,7 +135,60 @@ def _coerce_params(raw: Any) -> MutableMapping[str, Any]:
     if raw is None:
         return {}
     if isinstance(raw, Mapping):
-        return dict(raw)
+        # Normalize common AWS-style keys to our lowercase/underscored schema
+        KEY_ALIASES = {
+            # General/common
+            "Region": "region",
+            # EC2 launch
+            "ImageId": "ami_id",
+            "InstanceType": "instance_type",
+            "MinCount": "min_count",
+            "MaxCount": "max_count",
+            "KeyName": "key_name",
+            "SubnetId": "subnet_id",
+            "SecurityGroupIds": "security_group_ids",
+            "UserData": "user_data",
+            "IamInstanceProfile": "iam_instance_profile",
+            # Describe Images / Key Pairs
+            "Owners": "owners",
+            "Filters": "filters",
+            "ImageIds": "image_ids",
+            "KeyNames": "key_names",
+            # S3
+            "Bucket": "bucket_name",
+            "BucketName": "bucket_name",
+            "Object": "object",
+            "ObjectName": "object_name",
+            "FilePath": "file_path",
+            "Prefix": "prefix",
+            # Lambda
+            "FunctionName": "function_name",
+            "Runtime": "runtime",
+            "Handler": "handler",
+            "Role": "role_arn",
+            # ECS
+            "Cluster": "cluster",
+            "ServiceName": "service_name",
+            "TaskDefinition": "task_definition",
+            "DesiredCount": "desired_count",
+            "LaunchType": "launch_type",
+            "PlatformVersion": "platform_version",
+            "ExecutionRoleArn": "execution_role_arn",
+            "TaskRoleArn": "task_role_arn",
+            # ECS network config
+            "Subnets": "subnets",
+            "SecurityGroups": "security_groups",
+            "AssignPublicIp": "assign_public_ip",
+        }
+
+        normalized: Dict[str, Any] = {}
+        for key, value in raw.items():
+            if isinstance(key, str) and key in KEY_ALIASES:
+                normalized_key = KEY_ALIASES[key]
+            else:
+                normalized_key = key
+            normalized[normalized_key] = value
+        return normalized
     if isinstance(raw, str):
         stripped = raw.strip()
         if not stripped:
@@ -146,7 +199,8 @@ def _coerce_params(raw: Any) -> MutableMapping[str, Any]:
             raise ValueError("AWS Deployer params must be JSON object") from exc
         if not isinstance(parsed, Mapping):
             raise TypeError("AWS Deployer params JSON must decode to an object")
-        return dict(parsed)
+        # Recurse once for key normalization on parsed JSON
+        return _coerce_params(parsed)
     raise TypeError("AWS Deployer params must be mapping-compatible")
 
 
@@ -377,9 +431,47 @@ def _launch_ec2(params: MutableMapping[str, Any]) -> Mapping[str, Any]:
             }
         ]
 
+    # Preflight: verify AMI exists and is available in this region
+    try:
+        check = client.describe_images(ImageIds=[params["ami_id"]])
+        images = check.get("Images", [])
+        if not images:
+            raise ValueError(f"AMI not found in region: {params['ami_id']}")
+        state = images[0].get("State")
+        if state and state.lower() != "available":
+            raise ValueError(f"AMI state is not 'available': {params['ami_id']} (state={state})")
+    except ClientError as exc:
+        raise ValueError(f"AMI validation failed for {params['ami_id']}: {exc}") from exc
+
     response = client.run_instances(**run_kwargs)
-    instances = [instance["InstanceId"] for instance in response.get("Instances", [])]
-    return {"instance_ids": instances, "reservation_id": response.get("ReservationId")}
+    instances = [instance.get("InstanceId") for instance in response.get("Instances", []) if instance.get("InstanceId")]
+    reservation_id = response.get("ReservationId")
+
+    # Post-launch confirm: describe the newly created instances to ensure visibility
+    confirmed = []
+    if instances:
+        try:
+            desc = client.describe_instances(InstanceIds=instances)
+            for reservation in desc.get("Reservations", []):
+                for inst in reservation.get("Instances", []):
+                    confirmed.append(
+                        {
+                            "instance_id": inst.get("InstanceId"),
+                            "state": inst.get("State", {}).get("Name"),
+                            "type": inst.get("InstanceType"),
+                            "public_ip": inst.get("PublicIpAddress"),
+                            "private_ip": inst.get("PrivateIpAddress"),
+                            "availability_zone": inst.get("Placement", {}).get("AvailabilityZone"),
+                        }
+                    )
+        except ClientError:
+            # If describe fails, still return basic data from run_instances
+            pass
+
+    result: Dict[str, Any] = {"instance_ids": instances, "reservation_id": reservation_id}
+    if confirmed:
+        result["instances"] = confirmed
+    return result
 
 
 def _stop_ec2(params: MutableMapping[str, Any]) -> Mapping[str, Any]:
