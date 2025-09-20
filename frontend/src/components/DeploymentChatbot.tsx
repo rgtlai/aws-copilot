@@ -17,6 +17,7 @@ export interface Message {
   sender: 'user' | 'assistant';
   timestamp: Date;
   thoughts?: string[];
+  streaming?: boolean;
 }
 
 interface CredentialsStatusPayload {
@@ -32,6 +33,7 @@ const DeploymentChatbot = () => {
     sender,
     timestamp: new Date(),
     thoughts: thoughts && thoughts.length ? thoughts : undefined,
+    streaming: false,
   });
 
   const [messages, setMessages] = useState<Message[]>([
@@ -55,6 +57,38 @@ const DeploymentChatbot = () => {
   const [sessionToken, setSessionToken] = useState('');
   const [credentialsStatus, setCredentialsStatus] = useState<CredentialsStatusPayload | null>(null);
   const [uploadPrompt, setUploadPrompt] = useState<string | null>(null);
+  const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
+  const streamingMessageIdRef = useRef<string | null>(null);
+  const streamingBufferRef = useRef<string>("");
+  const typingTickerRef = useRef<number | null>(null);
+  const [typingDots, setTypingDots] = useState<string>("");
+  const deltaQueueRef = useRef<string[]>([]);
+  const typingTimerRef = useRef<number | null>(null);
+  const [displayedContent, setDisplayedContent] = useState<string>("");
+
+  // simple animated dots ... while waiting for first delta
+  useEffect(() => {
+    if (streamingMessageId && typingTickerRef.current === null) {
+      typingTickerRef.current = window.setInterval(() => {
+        setTypingDots((prev) => (prev.length >= 3 ? '' : prev + '.'));
+      }, 400);
+    }
+    if (!streamingMessageId && typingTickerRef.current !== null) {
+      window.clearInterval(typingTickerRef.current);
+      typingTickerRef.current = null;
+      setTypingDots('');
+    }
+    return () => {
+      if (typingTickerRef.current !== null) {
+        window.clearInterval(typingTickerRef.current);
+        typingTickerRef.current = null;
+      }
+      if (typingTimerRef.current !== null) {
+        clearTimeout(typingTimerRef.current);
+        typingTimerRef.current = null;
+      }
+    };
+  }, [streamingMessageId]);
   const [selectedUploadFile, setSelectedUploadFile] = useState<File | null>(null);
   const [uploadBucket, setUploadBucket] = useState('');
   const [uploadObjectKey, setUploadObjectKey] = useState('');
@@ -65,6 +99,40 @@ const DeploymentChatbot = () => {
   const { toast } = useToast();
 
   const readyToDeploy = useMemo(() => agentReady && hasCredentials, [agentReady, hasCredentials]);
+
+  // Process delta queue with typing delay
+  const processDeltaQueue = useCallback(() => {
+    if (deltaQueueRef.current.length === 0) {
+      if (typingTimerRef.current !== null) {
+        clearTimeout(typingTimerRef.current);
+        typingTimerRef.current = null;
+      }
+      return;
+    }
+
+    const delta = deltaQueueRef.current.shift()!;
+    streamingBufferRef.current += delta;
+
+    if (streamingMessageId) {
+      setMessages((prev) => prev.map((m) => {
+        if (m.id === streamingMessageId) {
+          const hasContent = streamingBufferRef.current.trim().length > 0;
+          const content = hasContent ? streamingBufferRef.current : `${typingDots || '.'}`;
+          return { ...m, content, streaming: true };
+        }
+        return m;
+      }));
+    }
+
+    // Schedule next delta with typing delay
+    if (deltaQueueRef.current.length > 0) {
+      typingTimerRef.current = window.setTimeout(() => {
+        processDeltaQueue();
+      }, 30); // 30ms delay between tokens for natural typing feel
+    } else {
+      typingTimerRef.current = null;
+    }
+  }, [streamingMessageId, typingDots]);
 
   const loadCredentialsStatus = useCallback(async () => {
     try {
@@ -181,7 +249,136 @@ const DeploymentChatbot = () => {
           return;
         }
 
+        if (data.type === 'final_answer_stream_start') {
+          // Create a placeholder assistant message with animated dots and mark streaming
+          const placeholder = createMessage('...', 'assistant');
+          placeholder.streaming = true;
+          setMessages((prev) => [...prev, placeholder]);
+          setStreamingMessageId(placeholder.id);
+          streamingMessageIdRef.current = placeholder.id;
+          streamingBufferRef.current = '';
+          return;
+        }
+
+        if (data.type === 'final_answer_stream_delta') {
+          const delta = typeof data.delta === 'string' ? data.delta : '';
+          if (streamingMessageId && delta) {
+            // Add delta to queue for processing with typing delay
+            deltaQueueRef.current.push(delta);
+
+            // Start processing if not already running
+            if (typingTimerRef.current === null) {
+              processDeltaQueue();
+            }
+          }
+          return;
+        }
+
+        if (data.type === 'final_answer_stream_end') {
+          const finalAnswer: string = typeof data.final_answer === 'string' ? data.final_answer : '';
+          const thoughtProcess = Array.isArray(data.thought_process) ? data.thought_process : [];
+
+          // Use the ref value which should be more reliable
+          const currentStreamingId = streamingMessageIdRef.current;
+
+          // Process reasoning for the toggle area first
+          const reasoningSteps = Array.isArray(thoughtProcess)
+            ? thoughtProcess
+                .map((step: any, index: number) => {
+                  const parts: string[] = [];
+                  if (step.thought) parts.push(`Thought ${index + 1}: ${step.thought}`);
+                  let observation: string | null = null;
+                  const rawObservation = typeof step.observation === 'string' ? step.observation : step.observation?.result ?? step.observation;
+                  if (rawObservation !== undefined && rawObservation !== null) {
+                    observation = typeof rawObservation === 'string' ? rawObservation : (() => { try { return JSON.stringify(rawObservation); } catch { return String(rawObservation); } })();
+                  }
+                  if (observation) parts.push(`Observation: ${observation}`);
+                  return parts.join('\n');
+                })
+                .filter(Boolean)
+            : [];
+
+          const finalReasoning: string[] = [];
+          let uploadInstructions: string | null = null;
+          if (typeof finalAnswer === 'string' && finalAnswer.trim()) {
+            const lines = finalAnswer.split(/\n+/).map((line) => line.trim()).filter(Boolean);
+            const messageLines: string[] = [];
+            lines.forEach((line) => {
+              if (/^Thought\s*\d*:/.test(line) || line.startsWith('Observation:')) { finalReasoning.push(line); return; }
+              if (line.startsWith('UPLOAD_PROMPT:')) { uploadInstructions = line.replace('UPLOAD_PROMPT:', '').trim(); return; }
+              messageLines.push(line);
+            });
+          }
+
+          let combinedThoughts = [...reasoningSteps, ...finalReasoning].filter((value, index, array) => value && array.indexOf(value) === index);
+          let uploadInstructionsFromThoughts: string | null = null;
+          combinedThoughts = combinedThoughts.reduce<string[]>((acc, entry) => {
+            if (entry.includes('UPLOAD_PROMPT:')) {
+              const [, instructionPart] = entry.split('UPLOAD_PROMPT:');
+              const instructions = (instructionPart ?? '').trim();
+              uploadInstructionsFromThoughts = instructions || uploadInstructionsFromThoughts;
+              return acc;
+            }
+            return [...acc, entry];
+          }, []);
+
+          const effectiveInstructions = uploadInstructions ?? uploadInstructionsFromThoughts;
+          if (effectiveInstructions !== null) {
+            const resolvedInstructions = effectiveInstructions || 'Please choose a file to upload.';
+            setUploadPrompt(resolvedInstructions);
+            if (!uploadBucket.trim()) {
+              const inferredBucket = inferBucketFromText(resolvedInstructions);
+              if (inferredBucket) { setUploadBucket(inferredBucket); setBucketHint(inferredBucket); }
+            }
+          }
+
+          // Update the message with final content and thoughts in a single update
+          if (currentStreamingId) {
+            setMessages((prev) => prev.map((m) => {
+              if (m.id === currentStreamingId) {
+                return {
+                  ...m,
+                  content: finalAnswer || (streamingBufferRef.current || 'Agent responded without additional details.'),
+                  streaming: false,
+                  thoughts: combinedThoughts.length > 0 ? combinedThoughts : undefined
+                };
+              }
+              return m;
+            }));
+          } else if (finalAnswer) {
+            setMessages((prev) => [...prev, createMessage(finalAnswer, 'assistant', combinedThoughts.length > 0 ? combinedThoughts : undefined)]);
+          }
+
+          // Clear streaming state after message update
+          setStreamingMessageId(null);
+          streamingMessageIdRef.current = null;
+          streamingBufferRef.current = '';
+          setTypingDots('');
+
+          // Clear typing delay timer and queue
+          if (typingTimerRef.current !== null) {
+            clearTimeout(typingTimerRef.current);
+            typingTimerRef.current = null;
+          }
+          deltaQueueRef.current = [];
+
+          return;
+        }
+
         if (data.type === 'agent_response') {
+          // If we have streaming events active, skip the legacy response handler
+          // The streaming handlers will take care of the message
+
+          // Check if the most recent message is a streaming placeholder
+          const lastMessage = messages[messages.length - 1];
+          if (lastMessage && lastMessage.streaming === true) {
+            return;
+          }
+
+          if (streamingMessageId || streamingMessageIdRef.current) {
+            return;
+          }
+
           const finalAnswer: string | undefined = data.final_answer;
           const reasoningSteps = Array.isArray(data.thought_process)
             ? data.thought_process
@@ -303,7 +500,19 @@ const DeploymentChatbot = () => {
             }
           }
 
-          setMessages(prev => [...prev, createMessage(assistantMessage, 'assistant', combinedThoughts)]);
+          // If a streaming message is in progress, finalize it instead of appending a new bubble
+          if (streamingMessageId) {
+            setMessages((prev) => prev.map((m) => (
+              m.id === streamingMessageId
+                ? { ...m, content: assistantMessage, thoughts: combinedThoughts, streaming: false }
+                : m
+            )));
+            setStreamingMessageId(null);
+            streamingBufferRef.current = '';
+            setTypingDots('');
+          } else {
+            setMessages(prev => [...prev, createMessage(assistantMessage, 'assistant', combinedThoughts)]);
+          }
 
           if (data.ready_to_deploy === true || (finalAnswer && finalAnswer.toLowerCase().includes('ready'))) {
             setAgentReady(true);
@@ -335,6 +544,10 @@ const DeploymentChatbot = () => {
       if (pingIntervalRef.current !== null) {
         window.clearInterval(pingIntervalRef.current);
         pingIntervalRef.current = null;
+      }
+      if (typingTimerRef.current !== null) {
+        clearTimeout(typingTimerRef.current);
+        typingTimerRef.current = null;
       }
       socket.close();
     };

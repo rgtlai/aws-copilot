@@ -89,7 +89,19 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
   const isUser = message.sender === 'user';
   const isAssistant = message.sender === 'assistant';
   const [showThoughts, setShowThoughts] = React.useState(false);
-  const contentSegments = formatContent(message.content);
+  const contentSegments = message.streaming
+    ? [
+        <div key="streaming" className="mb-2 text-sm leading-relaxed last:mb-0">
+          <div className="flex items-center space-x-1">
+            <div className="flex space-x-1">
+              <div className="w-2 h-2 bg-current rounded-full animate-bounce" style={{ animationDelay: '0ms', animationDuration: '1.4s' }}></div>
+              <div className="w-2 h-2 bg-current rounded-full animate-bounce" style={{ animationDelay: '160ms', animationDuration: '1.4s' }}></div>
+              <div className="w-2 h-2 bg-current rounded-full animate-bounce" style={{ animationDelay: '320ms', animationDuration: '1.4s' }}></div>
+            </div>
+          </div>
+        </div>,
+      ]
+    : formatContent(message.content);
 
   React.useEffect(() => {
     setShowThoughts(false);

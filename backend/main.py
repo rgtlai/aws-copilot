@@ -6,6 +6,8 @@ import json
 import sys
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+import re
+from typing import Iterator
 
 from fastapi import (
     APIRouter,
@@ -144,6 +146,17 @@ async def upload_file_to_s3(
 app.include_router(api_router)
 
 
+def _chunk_text(value: str) -> Iterator[str]:
+    """Yield small word-like chunks for a smooth streaming effect.
+
+    Splits by words and preserves trailing spaces per token to avoid
+    collapsing whitespace during streaming.
+    """
+    text = value or ""
+    for match in re.finditer(r"\S+\s*", text):
+        yield match.group(0)
+
+
 @app.websocket("/ws/agent")
 async def agent_websocket(websocket: WebSocket) -> None:
     """WebSocket endpoint bridging frontend conversations to the deployment agent."""
@@ -185,6 +198,9 @@ async def agent_websocket(websocket: WebSocket) -> None:
             await websocket.send_json({"type": "error", "detail": "Missing 'message' field in payload."})
             continue
 
+        # Notify client to show typing indicator and prepare for streaming
+        await websocket.send_json({"type": "final_answer_stream_start"})
+
         loop = asyncio.get_running_loop()
         try:
             agent_response = await loop.run_in_executor(None, agent.run, message)
@@ -192,10 +208,16 @@ async def agent_websocket(websocket: WebSocket) -> None:
             await websocket.send_json({"type": "error", "detail": f"Agent execution failed: {exc}"})
             continue
 
+        # Stream only the final answer content in chunks
+        final_answer = getattr(agent_response, "final_answer", None) or ""
+        for chunk in _chunk_text(final_answer):
+            await websocket.send_json({"type": "final_answer_stream_delta", "delta": chunk})
+
+        # Send closing event with full final answer and the reasoning steps for the toggle UI
         await websocket.send_json(
             {
-                "type": "agent_response",
-                "final_answer": getattr(agent_response, "final_answer", None),
+                "type": "final_answer_stream_end",
+                "final_answer": final_answer,
                 "thought_process": [
                     {
                         "thought": getattr(step, "thought", None),
